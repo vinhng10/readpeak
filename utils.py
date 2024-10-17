@@ -27,7 +27,7 @@ def normalize_os(item: str | None) -> str | None:
     elif "ipados" in item:
         return "ios"
     else:
-        return "unknown"
+        return item
 
 
 def normalize_make(item: str | None) -> str | None:
@@ -35,9 +35,8 @@ def normalize_make(item: str | None) -> str | None:
         return None
 
     item = item.replace("tablet", "")
-    if "samsung" in item:
-        return "samsung"
-    elif "apple" in item:
+    item = item.split()[0]
+    if "apple" in item:
         return "apple"
     elif "iphone" in item:
         return "apple"
@@ -45,24 +44,12 @@ def normalize_make(item: str | None) -> str | None:
         return "apple"
     elif "ipad" in item:
         return "apple"
-    elif "huawei" in item:
-        return "huawei"
-    elif "oneplus" in item:
-        return "oneplus"
     elif "nokia" in item:
         return "nokia"
     elif "mi" in item and "microsoft" not in item:
         return "xiaomi"
-    elif "lenovo" in item:
-        return "lenovo"
-    elif "motorola" in item:
-        return "motorola"
-    elif "sony" in item:
-        return "sony"
-    elif "unknown" in item:
-        return "unknown"
     else:
-        return "others"
+        return item
 
 
 def normalize_lang(item: str | None) -> str | None:
