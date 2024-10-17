@@ -1,6 +1,10 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import warnings
+from matplotlib.axes import Axes
+
+warnings.filterwarnings("ignore")
 
 
 def normalize_os(item: str | None) -> str | None:
@@ -71,11 +75,12 @@ def barplot(
     xlabel: str | None = None,
     ylabel: str | None = None,
     figsize: tuple[int] = (10, 6),
+    ax: Axes | None = None,
 ) -> None:
+    if ax == None:
+        _, ax = plt.subplots(figsize=figsize)
     series = series.sort_values(ascending=False)
-    fig, ax = plt.subplots(figsize=figsize)
     sns.barplot(series, ax=ax)
     ax.set_title(title)
     ax.set(xlabel=xlabel, ylabel=ylabel)
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
-    plt.show()
