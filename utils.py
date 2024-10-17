@@ -61,6 +61,10 @@ def normalize_make(item: str | None) -> str | None:
         return "others"
 
 
+def normalize_lang(item: str | None) -> str | None:
+    return item.split("-")[0] if item else None
+
+
 def barplot(
     series: pd.Series,
     title: str | None = None,
