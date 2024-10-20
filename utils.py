@@ -60,6 +60,32 @@ def normalize_lang(item: str | None) -> str | None:
     return item.split("-")[0] if item else None
 
 
+def beta_posterior_ctr(
+    clicks: int, impressions: int, alpha: float = 4, beta: float = 996
+) -> float:
+    return round(100 * (alpha + clicks) / (alpha + beta + impressions), 2)
+
+
+def select_for_plot(data: pd.DataFrame, column: str, N: int = 15) -> list[any]:
+    CTR = (
+        data.groupby(column)
+        .agg(impressions=("label", "size"), clicks=("label", "sum"))
+        .reset_index()
+    )
+    CTR["CTR"] = beta_posterior_ctr(CTR["clicks"], CTR["impressions"])
+    selected = list(CTR.sort_values("CTR", ascending=False)[column])[: N // 2]
+    # print(data[column].value_counts(ascending=False))
+    counts = list(data[column].value_counts(ascending=False).index)
+    for count in counts:
+        if len(selected) >= N:
+            break
+        if count not in selected:
+            selected.append(count)
+        else:
+            continue
+    return selected
+
+
 def update_plot(
     data: pd.DataFrame, view_choice: str, os_choice: str, output: widgets.Output
 ):
@@ -85,10 +111,8 @@ def update_plot(
             total_ctr = (
                 hourly_impressions.groupby("lt")
                 .apply(
-                    lambda x: (
-                        round(100 * x["clicks"].sum() / x["impressions"].sum(), 2)
-                        if x["impressions"].sum() > 100
-                        else 0
+                    lambda x: beta_posterior_ctr(
+                        x["clicks"].sum(), x["impressions"].sum()
                     )
                 )
                 .reset_index(name="CTR")
@@ -120,13 +144,8 @@ def update_plot(
                 total_cumulative_impressions, total_cumulative_clicks, on="lt"
             )
             total_ctr["CTR"] = total_ctr.apply(
-                lambda row: (
-                    round(
-                        100 * row["cumulative_clicks"] / row["cumulative_impressions"],
-                        2,
-                    )
-                    if row["cumulative_impressions"] > 100
-                    else 0
+                lambda row: beta_posterior_ctr(
+                    row["cumulative_clicks"], row["cumulative_impressions"]
                 ),
                 axis=1,
             )
@@ -149,7 +168,7 @@ def update_plot(
                     label="Total",
                     ax=ax1,
                 )
-            ax1.set_title(f"Hourly Impressions Over Time")
+            ax1.set_title(f"Hourly Impressions & CTR Over Time")
             ax1.set_ylabel("Impressions")
         elif view_choice == "cumulative":
             # Plot the cumulative impressions over time
@@ -170,19 +189,19 @@ def update_plot(
                     label="Total",
                     ax=ax1,
                 )
-            ax1.set_title(f"Cumulative Impressions Over Time")
+            ax1.set_title(f"Cumulative Impressions & CTR Over Time")
             ax1.set_ylabel("Impressions")
 
         # Create a secondary y-axis for CTR
         ax2 = ax1.twinx()
         ax2.set_ylabel("CTR (%)")
-        ax2.set_ylim(-1, 25)
+        ax2.set_ylim(-0.5, max(total_ctr["CTR"].max() + 5, 10))
 
         # Plot the CTR as a bar plot
         bars = ax2.bar(
             total_ctr["lt"],
             total_ctr["CTR"],
-            alpha=0.3,
+            alpha=0.2,
             color="black",
             width=0.03,
             label="CTR",
@@ -217,7 +236,7 @@ def create_content(
         disabled=False,
     )
     os_radio = widgets.RadioButtons(
-        options=["individual", "all"],
+        options=["all", "individual"],
         description="OS:",
         disabled=False,
     )
@@ -227,7 +246,7 @@ def create_content(
     filtered_data = filter_df(data, filters)
 
     # Display the initial plot (hourly by default)
-    update_plot(filtered_data, "hourly", "individual", output)
+    update_plot(filtered_data, "hourly", "all", output)
 
     # Add a callback to the radio buttons to update the plot when the option changes
     view_radio.observe(
@@ -255,27 +274,27 @@ def create_content(
     return content
 
 
-def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
+def plot_category_vs_ctr(data: pd.DataFrame, column: str, n: int = 100) -> Figure:
     # Compute CTR per category of the column:
-    df = (
-        df.groupby(column)
+    data = (
+        data.groupby(column)
         .agg(impressions=("label", "size"), clicks=("label", "sum"))
         .reset_index()
     )
-    df["CTR"] = (100 * df["clicks"] / df["impressions"]).round(2)
-    df = df.sort_values("impressions", ascending=False).iloc[:n, :]
+    data["CTR"] = beta_posterior_ctr(data["clicks"], data["impressions"])
+    data = data.sort_values("impressions", ascending=False).iloc[:n, :]
 
     # Create figure and axis
     fig, ax1 = plt.subplots(figsize=(15, 3))
 
     # Position for bars on x-axis
     bar_width = 0.35  # Width of the bars
-    index = np.arange(len(df))  # X locations for the groups
+    index = np.arange(len(data))  # X locations for the groups
 
     # Bar plot for 'impressions' on the left y-axis
     ax1.bar(
         index - bar_width / 2,
-        df["impressions"],
+        data["impressions"],
         bar_width,
         label="Impressions",
     )
@@ -291,7 +310,7 @@ def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
 
     # Bar plot for 'CTR' on the right y-axis, scaled as a percentage
     ax2.bar(
-        index + bar_width / 2, df["CTR"], bar_width, label="CTR (%)", color="tomato"
+        index + bar_width / 2, data["CTR"], bar_width, label="CTR (%)", color="tomato"
     )
 
     # Set up the second y-axis for CTR
@@ -299,7 +318,7 @@ def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
 
     # Adjust x-axis labels and ticks
     ax1.set_xticks(index)
-    ax1.set_xticklabels(df[column], rotation=90)
+    ax1.set_xticklabels(data[column], rotation=90)
 
     # Get handles and labels from both axes
     handles1, labels1 = ax1.get_legend_handles_labels()
