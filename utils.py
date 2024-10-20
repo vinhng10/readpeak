@@ -1,3 +1,4 @@
+from functools import reduce
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -5,6 +6,7 @@ import seaborn as sns
 import warnings
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from ipywidgets import widgets
 
 warnings.filterwarnings("ignore")
 
@@ -58,6 +60,201 @@ def normalize_lang(item: str | None) -> str | None:
     return item.split("-")[0] if item else None
 
 
+def update_plot(
+    data: pd.DataFrame, view_choice: str, os_choice: str, output: widgets.Output
+):
+    # Clear the output widget before rendering the new plot
+    output.clear_output()
+
+    with output:
+        # Group by 'os' and 'lt' (using pd.Grouper to resample by hour)
+        hourly_impressions = (
+            data.groupby(["os", pd.Grouper(key="lt", freq="H")])
+            .agg(
+                impressions=("label", "size"),  # Count the number of impressions
+                clicks=("label", "sum"),  # Sum the 'label' column to count clicks
+            )
+            .reset_index()
+        )
+        total_impressions = (
+            hourly_impressions.groupby("lt")["impressions"].sum().reset_index()
+        )
+
+        # Calculate CTR for both hourly and cumulative cases
+        if view_choice == "hourly":
+            total_ctr = (
+                hourly_impressions.groupby("lt")
+                .apply(
+                    lambda x: (
+                        round(100 * x["clicks"].sum() / x["impressions"].sum(), 2)
+                        if x["impressions"].sum() > 100
+                        else 0
+                    )
+                )
+                .reset_index(name="CTR")
+            )
+        elif view_choice == "cumulative":
+            # Calculate cumulative impressions and clicks
+            hourly_impressions["cumulative_impressions"] = hourly_impressions.groupby(
+                "os"
+            )["impressions"].cumsum()
+            hourly_impressions["cumulative_clicks"] = hourly_impressions.groupby("os")[
+                "clicks"
+            ].cumsum()
+
+            total_cumulative_impressions = (
+                hourly_impressions.groupby("lt")["impressions"]
+                .sum()
+                .cumsum()
+                .reset_index(name="cumulative_impressions")
+            )
+            total_cumulative_clicks = (
+                hourly_impressions.groupby("lt")["clicks"]
+                .sum()
+                .cumsum()
+                .reset_index(name="cumulative_clicks")
+            )
+
+            # Calculate cumulative CTR
+            total_ctr = pd.merge(
+                total_cumulative_impressions, total_cumulative_clicks, on="lt"
+            )
+            total_ctr["CTR"] = total_ctr.apply(
+                lambda row: (
+                    round(
+                        100 * row["cumulative_clicks"] / row["cumulative_impressions"],
+                        2,
+                    )
+                    if row["cumulative_impressions"] > 100
+                    else 0
+                ),
+                axis=1,
+            )
+
+        # Create a figure and axes
+        fig, ax1 = plt.subplots(figsize=(13, 3))
+
+        if view_choice == "hourly":
+            # Plot the hourly impressions over time
+            if os_choice == "individual":
+                sns.lineplot(
+                    data=hourly_impressions, x="lt", y="impressions", hue="os", ax=ax1
+                )
+            elif os_choice == "all":
+                sns.lineplot(
+                    data=total_impressions,
+                    x="lt",
+                    y="impressions",
+                    color="red",
+                    label="Total",
+                    ax=ax1,
+                )
+            ax1.set_title(f"Hourly Impressions Over Time")
+            ax1.set_ylabel("Impressions")
+        elif view_choice == "cumulative":
+            # Plot the cumulative impressions over time
+            if os_choice == "individual":
+                sns.lineplot(
+                    data=hourly_impressions,
+                    x="lt",
+                    y="cumulative_impressions",
+                    hue="os",
+                    ax=ax1,
+                )
+            elif os_choice == "all":
+                sns.lineplot(
+                    data=total_cumulative_impressions,
+                    x="lt",
+                    y="cumulative_impressions",
+                    color="red",
+                    label="Total",
+                    ax=ax1,
+                )
+            ax1.set_title(f"Cumulative Impressions Over Time")
+            ax1.set_ylabel("Impressions")
+
+        # Create a secondary y-axis for CTR
+        ax2 = ax1.twinx()
+        ax2.set_ylabel("CTR (%)")
+        ax2.set_ylim(-1, 25)
+
+        # Plot the CTR as a bar plot
+        bars = ax2.bar(
+            total_ctr["lt"],
+            total_ctr["CTR"],
+            alpha=0.3,
+            color="black",
+            width=0.03,
+            label="CTR",
+        )
+
+        ax1.set_xlabel("Datetime")
+        ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45)
+
+        # Combine legends
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + [bars], labels1 + labels2, loc="upper right")
+
+        # Show the plot
+        plt.show()
+
+
+def filter_df(data: pd.DataFrame, filters: dict[str, str]) -> pd.DataFrame:
+    return data[reduce(lambda x, y: x & y, [data[k] == v for k, v in filters.items()])]
+
+
+def create_content(
+    data: pd.DataFrame,
+    filters: dict[str, str],
+) -> widgets.Box:
+    output = widgets.Output()
+
+    # Create radio buttons for "hourly" and "cumulative"
+    view_radio = widgets.RadioButtons(
+        options=["hourly", "cumulative"],
+        description="View:",
+        disabled=False,
+    )
+    os_radio = widgets.RadioButtons(
+        options=["individual", "all"],
+        description="OS:",
+        disabled=False,
+    )
+    radio_buttons = widgets.HBox([view_radio, os_radio])
+
+    # Filter the data:
+    filtered_data = filter_df(data, filters)
+
+    # Display the initial plot (hourly by default)
+    update_plot(filtered_data, "hourly", "individual", output)
+
+    # Add a callback to the radio buttons to update the plot when the option changes
+    view_radio.observe(
+        lambda change, output=output: update_plot(
+            filter_df(data, filters),
+            change["new"],
+            os_radio.value,
+            output,
+        ),
+        names="value",
+    )
+    os_radio.observe(
+        lambda change, output=output: update_plot(
+            filter_df(data, filters),
+            view_radio.value,
+            change["new"],
+            output,
+        ),
+        names="value",
+    )
+
+    # Organize the layout with radio buttons and plot
+    content = widgets.HBox([radio_buttons, output])
+
+    return content
+
+
 def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
     # Compute CTR per category of the column:
     df = (
@@ -66,11 +263,7 @@ def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
         .reset_index()
     )
     df["CTR"] = (100 * df["clicks"] / df["impressions"]).round(2)
-    if column in ["hour", "weekday"]:
-        df = df.sort_values(column, ascending=True)
-    else:
-        df = df.sort_values("impressions", ascending=False)
-    df = df.iloc[:n, :]
+    df = df.sort_values("impressions", ascending=False).iloc[:n, :]
 
     # Create figure and axis
     fig, ax1 = plt.subplots(figsize=(15, 3))
@@ -89,13 +282,12 @@ def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
 
     # Set up the first y-axis for impressions
     ax1.set_ylabel("Total Impressions", fontsize=12)
-    ax1.set_xlabel(column.capitalize(), fontsize=12)
 
     # Create the second y-axis for CTR
     ax2 = ax1.twinx()
 
     # Force the y-axis limit for CTR to be 0-30
-    ax2.set_ylim(0, 30)
+    ax2.set_ylim(0, 25)
 
     # Bar plot for 'CTR' on the right y-axis, scaled as a percentage
     ax2.bar(
@@ -117,7 +309,7 @@ def plot_category_vs_ctr(df: pd.DataFrame, column: str, n: int = 100) -> Figure:
     ax1.legend(handles1 + handles2, labels1 + labels2, loc="upper right")
 
     # Display plot
-    ax1.set_title(f"{column.capitalize()} Impressions vs CTR", fontsize=14)
+    ax1.set_title(f"{column.capitalize()}", fontsize=16)
 
     plt.close(fig)
 
