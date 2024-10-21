@@ -86,70 +86,91 @@ def select_for_plot(data: pd.DataFrame, column: str, N: int = 15) -> list[any]:
     return selected
 
 
+def group_df(data: pd.DataFrame, filters: dict[str, str], view_choice: str):
+    # Filter the data:
+    filtered_data = filter_df(data, filters)
+
+    # Group by 'os' and 'lt' (using pd.Grouper to resample by hour)
+    hourly_impressions = (
+        filtered_data.groupby(["os", pd.Grouper(key="lt", freq="H")])
+        .agg(
+            impressions=("label", "size"),  # Count the number of impressions
+            clicks=("label", "sum"),  # Sum the 'label' column to count clicks
+        )
+        .reset_index()
+    )
+    total_impressions = (
+        hourly_impressions.groupby("lt")["impressions"].sum().reset_index()
+    )
+
+    # Calculate CTR for both hourly and cumulative cases
+    if view_choice == "hourly":
+        total_ctr = (
+            hourly_impressions.groupby("lt")
+            .apply(
+                lambda x: beta_posterior_ctr(x["clicks"].sum(), x["impressions"].sum())
+            )
+            .reset_index(name="CTR")
+        )
+        total_cumulative_impressions = None
+    elif view_choice == "cumulative":
+        # Calculate cumulative impressions and clicks
+        hourly_impressions["cumulative_impressions"] = hourly_impressions.groupby("os")[
+            "impressions"
+        ].cumsum()
+        hourly_impressions["cumulative_clicks"] = hourly_impressions.groupby("os")[
+            "clicks"
+        ].cumsum()
+
+        total_cumulative_impressions = (
+            hourly_impressions.groupby("lt")["impressions"]
+            .sum()
+            .cumsum()
+            .reset_index(name="cumulative_impressions")
+        )
+        total_cumulative_clicks = (
+            hourly_impressions.groupby("lt")["clicks"]
+            .sum()
+            .cumsum()
+            .reset_index(name="cumulative_clicks")
+        )
+
+        # Calculate cumulative CTR
+        total_ctr = pd.merge(
+            total_cumulative_impressions, total_cumulative_clicks, on="lt"
+        )
+        total_ctr["CTR"] = total_ctr.apply(
+            lambda row: beta_posterior_ctr(
+                row["cumulative_clicks"], row["cumulative_impressions"]
+            ),
+            axis=1,
+        )
+
+    return (
+        hourly_impressions,
+        total_impressions,
+        total_cumulative_impressions,
+        total_ctr,
+    )
+
+
 def update_plot(
-    data: pd.DataFrame, view_choice: str, os_choice: str, output: widgets.Output
+    data: pd.DataFrame,
+    art_id: str,
+    view_choice: str,
+    os_choice: str,
+    output: widgets.Output,
 ):
     # Clear the output widget before rendering the new plot
     output.clear_output()
+    (
+        hourly_impressions,
+        total_impressions,
+        total_cumulative_impressions,
+        total_ctr,
+    ) = group_df(data, {"art": art_id}, view_choice)
 
     with output:
-        # Group by 'os' and 'lt' (using pd.Grouper to resample by hour)
-        hourly_impressions = (
-            data.groupby(["os", pd.Grouper(key="lt", freq="H")])
-            .agg(
-                impressions=("label", "size"),  # Count the number of impressions
-                clicks=("label", "sum"),  # Sum the 'label' column to count clicks
-            )
-            .reset_index()
-        )
-        total_impressions = (
-            hourly_impressions.groupby("lt")["impressions"].sum().reset_index()
-        )
-
-        # Calculate CTR for both hourly and cumulative cases
-        if view_choice == "hourly":
-            total_ctr = (
-                hourly_impressions.groupby("lt")
-                .apply(
-                    lambda x: beta_posterior_ctr(
-                        x["clicks"].sum(), x["impressions"].sum()
-                    )
-                )
-                .reset_index(name="CTR")
-            )
-        elif view_choice == "cumulative":
-            # Calculate cumulative impressions and clicks
-            hourly_impressions["cumulative_impressions"] = hourly_impressions.groupby(
-                "os"
-            )["impressions"].cumsum()
-            hourly_impressions["cumulative_clicks"] = hourly_impressions.groupby("os")[
-                "clicks"
-            ].cumsum()
-
-            total_cumulative_impressions = (
-                hourly_impressions.groupby("lt")["impressions"]
-                .sum()
-                .cumsum()
-                .reset_index(name="cumulative_impressions")
-            )
-            total_cumulative_clicks = (
-                hourly_impressions.groupby("lt")["clicks"]
-                .sum()
-                .cumsum()
-                .reset_index(name="cumulative_clicks")
-            )
-
-            # Calculate cumulative CTR
-            total_ctr = pd.merge(
-                total_cumulative_impressions, total_cumulative_clicks, on="lt"
-            )
-            total_ctr["CTR"] = total_ctr.apply(
-                lambda row: beta_posterior_ctr(
-                    row["cumulative_clicks"], row["cumulative_impressions"]
-                ),
-                axis=1,
-            )
-
         # Create a figure and axes
         fig, ax1 = plt.subplots(figsize=(13, 3))
 
@@ -168,8 +189,6 @@ def update_plot(
                     label="Total",
                     ax=ax1,
                 )
-            ax1.set_title(f"Hourly Impressions & CTR Over Time")
-            ax1.set_ylabel("Impressions")
         elif view_choice == "cumulative":
             # Plot the cumulative impressions over time
             if os_choice == "individual":
@@ -189,8 +208,6 @@ def update_plot(
                     label="Total",
                     ax=ax1,
                 )
-            ax1.set_title(f"Cumulative Impressions & CTR Over Time")
-            ax1.set_ylabel("Impressions")
 
         # Create a secondary y-axis for CTR
         ax2 = ax1.twinx()
@@ -207,7 +224,10 @@ def update_plot(
             label="CTR",
         )
 
-        ax1.set_xlabel("Datetime")
+        ax1.set_title(f"Ad Performance")
+        ax1.set_ylabel("Impressions")
+        ax1.set_xlabel("")
+        ax1.set_xlim([data["lt"].min(), data["lt"].max()])
         ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45)
 
         # Combine legends
@@ -219,13 +239,160 @@ def update_plot(
         plt.show()
 
 
+def update_detailed_plot(
+    data: pd.DataFrame,
+    art_id: str,
+    tag_id: str | None,
+    view_choice: str,
+    os_choice: str,
+    output: widgets.Output,
+):
+    # Clear the output widget before rendering the new plot
+    output.clear_output()
+
+    (
+        art_hourly_impressions,
+        art_total_impressions,
+        art_total_cumulative_impressions,
+        art_total_ctr,
+    ) = group_df(data, {"art": art_id, "tag": tag_id}, view_choice)
+
+    loc_id = tag_id.split("-")[1]
+    (
+        tag_hourly_impressions,
+        tag_total_impressions,
+        tag_total_cumulative_impressions,
+        tag_total_ctr,
+    ) = group_df(data, {"tag": tag_id}, view_choice)
+
+    (
+        loc_hourly_impressions,
+        loc_total_impressions,
+        loc_total_cumulative_impressions,
+        loc_total_ctr,
+    ) = group_df(data, {"loc": loc_id}, view_choice)
+
+    hourly_impressions = [
+        art_hourly_impressions,
+        tag_hourly_impressions,
+        loc_hourly_impressions,
+    ]
+    total_impressions = [
+        art_total_impressions,
+        tag_total_impressions,
+        loc_total_impressions,
+    ]
+    total_cumulative_impressions = [
+        art_total_cumulative_impressions,
+        tag_total_cumulative_impressions,
+        loc_total_cumulative_impressions,
+    ]
+    total_ctr = [art_total_ctr, tag_total_ctr, loc_total_ctr]
+
+    titles = [
+        "Ad Performance Per Tag",
+        "Tag Performance Across All Ads",
+        "Loc Performance Across All Ads",
+    ]
+
+    # Determine the global min and max datetime (x-axis limits)
+    min_datetime = data["lt"].min()
+    max_datetime = data["lt"].max()
+
+    with output:
+        # Create a figure and axes
+        fig, ax = plt.subplots(3, 1, figsize=(13, 10))
+        plt.subplots_adjust(hspace=1)
+        for i in range(3):
+            if view_choice == "hourly":
+                # Plot the hourly impressions over time
+                if os_choice == "individual":
+                    sns.lineplot(
+                        data=hourly_impressions[i],
+                        x="lt",
+                        y="impressions",
+                        hue="os",
+                        ax=ax[i],
+                    )
+                elif os_choice == "all":
+                    sns.lineplot(
+                        data=total_impressions[i],
+                        x="lt",
+                        y="impressions",
+                        color="red",
+                        label="Total",
+                        ax=ax[i],
+                    )
+                ax[i].set_ylim(
+                    0, max(total_impressions[i]["impressions"].max() + 100, 500)
+                )
+            elif view_choice == "cumulative":
+                # Plot the cumulative impressions over time
+                if os_choice == "individual":
+                    sns.lineplot(
+                        data=hourly_impressions[i],
+                        x="lt",
+                        y="cumulative_impressions",
+                        hue="os",
+                        ax=ax[i],
+                    )
+                elif os_choice == "all":
+                    sns.lineplot(
+                        data=total_cumulative_impressions[i],
+                        x="lt",
+                        y="cumulative_impressions",
+                        color="red",
+                        label="Total",
+                        ax=ax[i],
+                    )
+                ax[i].set_ylim(
+                    0,
+                    max(
+                        total_cumulative_impressions[i]["cumulative_impressions"].max()
+                        + 5000,
+                        500,
+                    ),
+                )
+
+            # Create a secondary y-axis for CTR
+            ax2 = ax[i].twinx()
+            ax2.set_ylabel("CTR (%)")
+            ax2.set_ylim(0, max(total_ctr[i]["CTR"].max() + 5, 10))
+
+            # Plot the CTR as a bar plot
+            bars = ax2.bar(
+                total_ctr[i]["lt"],
+                total_ctr[i]["CTR"],
+                alpha=0.2,
+                color="black",
+                width=0.03,
+                label="CTR",
+            )
+
+            # Set the same x-axis limits for all subplots
+            ax[i].set_title(titles[i])
+            ax[i].set_ylabel("Impressions")
+            ax[i].set_xlabel("")
+            ax[i].set_xlim([min_datetime, max_datetime])
+            ax[i].set_xticklabels(ax[i].get_xticklabels(), rotation=45)
+
+            # Combine legends
+            lines1, labels1 = ax[i].get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax[i].legend(lines1 + [bars], labels1 + labels2, loc="upper right")
+
+        # Show the plot
+        plt.show()
+
+
 def filter_df(data: pd.DataFrame, filters: dict[str, str]) -> pd.DataFrame:
     return data[reduce(lambda x, y: x & y, [data[k] == v for k, v in filters.items()])]
 
 
 def create_content(
     data: pd.DataFrame,
-    filters: dict[str, str],
+    art_id: str,
+    tag_id: str | None = None,
 ) -> widgets.Box:
     output = widgets.Output()
 
@@ -242,28 +409,52 @@ def create_content(
     )
     radio_buttons = widgets.HBox([view_radio, os_radio])
 
-    # Filter the data:
-    filtered_data = filter_df(data, filters)
-
     # Display the initial plot (hourly by default)
-    update_plot(filtered_data, "hourly", "all", output)
+    if tag_id:
+        update_detailed_plot(data, art_id, tag_id, "hourly", "all", output)
+    else:
+        update_plot(data, art_id, "hourly", "all", output)
 
     # Add a callback to the radio buttons to update the plot when the option changes
     view_radio.observe(
-        lambda change, output=output: update_plot(
-            filter_df(data, filters),
-            change["new"],
-            os_radio.value,
-            output,
+        lambda change, output=output: (
+            update_detailed_plot(
+                data,
+                art_id,
+                tag_id,
+                change["new"],
+                os_radio.value,
+                output,
+            )
+            if tag_id
+            else update_plot(
+                data,
+                art_id,
+                change["new"],
+                os_radio.value,
+                output,
+            )
         ),
         names="value",
     )
     os_radio.observe(
-        lambda change, output=output: update_plot(
-            filter_df(data, filters),
-            view_radio.value,
-            change["new"],
-            output,
+        lambda change, output=output: (
+            update_detailed_plot(
+                data,
+                art_id,
+                tag_id,
+                view_radio.value,
+                change["new"],
+                output,
+            )
+            if tag_id
+            else update_plot(
+                data,
+                art_id,
+                view_radio.value,
+                change["new"],
+                output,
+            )
         ),
         names="value",
     )
