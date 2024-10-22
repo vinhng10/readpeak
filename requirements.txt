@@ -1,0 +1,10 @@
+numpy
+pandas
+seaborn
+matplotlib
+pyarrow
+scikit-learn
+category_encoders
+ipykernel
+ipywidgets
+pycaret

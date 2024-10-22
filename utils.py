@@ -1,12 +1,14 @@
-from functools import reduce
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
-from matplotlib.axes import Axes
+from sklearn.utils.random import check_random_state
+from category_encoders import LeaveOneOutEncoder
 from matplotlib.figure import Figure
 from ipywidgets import widgets
+from functools import reduce
+
 
 warnings.filterwarnings("ignore")
 
@@ -61,9 +63,13 @@ def normalize_lang(item: str | None) -> str | None:
 
 
 def posterior_ctr(
-    clicks: int, impressions: int, alpha: float = 4, beta: float = 996
+    clicks: int, impressions: int, alpha: float = 4, beta: float = 996, rounding=True
 ) -> float:
-    return round(100 * (alpha + clicks) / (alpha + beta + impressions), 2)
+    ctr = 100 * (alpha + clicks) / (alpha + beta + impressions)
+    if rounding:
+        return round(ctr, 2)
+    else:
+        return ctr
 
 
 def select_for_plot(data: pd.DataFrame, column: str, N: int = 15) -> list[any]:
@@ -255,7 +261,6 @@ def update_detailed_plot(
         art_total_ctr,
     ) = group_df(data, {"art": art_id, "tag": tag_id}, view_choice)
 
-    loc_id = tag_id.split("-")[1]
     (
         tag_hourly_impressions,
         tag_total_impressions,
@@ -263,34 +268,23 @@ def update_detailed_plot(
         tag_total_ctr,
     ) = group_df(data, {"tag": tag_id}, view_choice)
 
-    (
-        loc_hourly_impressions,
-        loc_total_impressions,
-        loc_total_cumulative_impressions,
-        loc_total_ctr,
-    ) = group_df(data, {"loc": loc_id}, view_choice)
-
     hourly_impressions = [
         art_hourly_impressions,
         tag_hourly_impressions,
-        loc_hourly_impressions,
     ]
     total_impressions = [
         art_total_impressions,
         tag_total_impressions,
-        loc_total_impressions,
     ]
     total_cumulative_impressions = [
         art_total_cumulative_impressions,
         tag_total_cumulative_impressions,
-        loc_total_cumulative_impressions,
     ]
-    total_ctr = [art_total_ctr, tag_total_ctr, loc_total_ctr]
+    total_ctr = [art_total_ctr, tag_total_ctr]
 
     titles = [
         "Ad Performance Per Tag",
         "Tag Performance Across All Ads",
-        "Loc Performance Across All Ads",
     ]
 
     # Determine the global min and max datetime (x-axis limits)
@@ -299,9 +293,9 @@ def update_detailed_plot(
 
     with output:
         # Create a figure and axes
-        fig, ax = plt.subplots(3, 1, figsize=(13, 10))
+        fig, ax = plt.subplots(len(titles), 1, figsize=(13, 7))
         plt.subplots_adjust(hspace=1)
-        for i in range(3):
+        for i in range(len(titles)):
             if view_choice == "hourly":
                 # Plot the hourly impressions over time
                 if os_choice == "individual":
@@ -524,18 +518,77 @@ def plot_category_vs_ctr(data: pd.DataFrame, column: str, n: int = 100) -> Figur
     return fig
 
 
-def barplot(
-    series: pd.Series,
-    title: str | None = None,
-    xlabel: str | None = None,
-    ylabel: str | None = None,
-    figsize: tuple[int] = (10, 6),
-    ax: Axes | None = None,
-) -> None:
-    if ax == None:
-        _, ax = plt.subplots(figsize=figsize)
-    series = series.sort_values(ascending=False)
-    sns.barplot(series, ax=ax)
-    ax.set_title(title)
-    ax.set(xlabel=xlabel, ylabel=ylabel)
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+class CTRLeaveOneOutEncoder(LeaveOneOutEncoder):
+
+    def fit_leave_one_out(self, X_in, y, cols=None):
+        X = X_in.copy(deep=True)
+
+        if cols is None:
+            cols = X.columns.values
+
+        self._mean = posterior_ctr(y.sum(), y.count(), rounding=False)
+
+        return {col: self.fit_column_map(X[col], y) for col in cols}
+
+    def transform_leave_one_out(self, X, y, mapping=None):
+        """
+        Leave one out encoding uses a single column of floats to represent the means of the target variables.
+        """
+
+        random_state_ = check_random_state(self.random_state)
+
+        for col, colmap in mapping.items():
+            level_notunique = colmap["count"] > 1
+
+            unique_train = colmap.index
+            unseen_values = pd.Series(
+                [x for x in X[col].unique() if x not in unique_train],
+                dtype=unique_train.dtype,
+            )
+
+            is_nan = X[col].isnull()
+            is_unknown_value = X[col].isin(unseen_values.dropna().astype(object))
+
+            if (
+                X[col].dtype.name == "category"
+            ):  # Pandas 0.24 tries hard to preserve categorical data type
+                index_dtype = X[col].dtype.categories.dtype
+                X[col] = X[col].astype(index_dtype)
+
+            if self.handle_unknown == "error" and is_unknown_value.any():
+                raise ValueError("Columns to be encoded can not contain new values")
+
+            if (
+                y is None
+            ):  # Replace level with its mean target; if level occurs only once, use global mean
+                level_means = posterior_ctr(
+                    colmap["sum"], colmap["count"], rounding=False
+                ).where(level_notunique, self._mean)
+                X[col] = X[col].map(level_means)
+            else:  # Replace level with its mean target, calculated excluding this row's target
+                # The y (target) mean for this level is normally just the sum/count;
+                # excluding this row's y, it's (sum - y) / (count - 1)
+                level_means = posterior_ctr(
+                    X[col].map(colmap["sum"]) - y,
+                    X[col].map(colmap["count"]) - 1,
+                    rounding=False,
+                )
+                # The 'where' fills in singleton levels (count = 1 -> div by 0) with the global mean
+                X[col] = level_means.where(
+                    X[col].map(colmap["count"][level_notunique]).notnull(), self._mean
+                )
+
+            if self.handle_unknown == "value":
+                X.loc[is_unknown_value, col] = self._mean
+            elif self.handle_unknown == "return_nan":
+                X.loc[is_unknown_value, col] = np.nan
+
+            if self.handle_missing == "value":
+                X.loc[is_nan & unseen_values.isnull().any(), col] = self._mean
+            elif self.handle_missing == "return_nan":
+                X.loc[is_nan, col] = np.nan
+
+            if self.sigma is not None and y is not None:
+                X[col] = X[col] * random_state_.normal(1.0, self.sigma, X[col].shape[0])
+
+        return X
