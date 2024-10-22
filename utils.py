@@ -60,7 +60,7 @@ def normalize_lang(item: str | None) -> str | None:
     return item.split("-")[0] if item else None
 
 
-def beta_posterior_ctr(
+def posterior_ctr(
     clicks: int, impressions: int, alpha: float = 4, beta: float = 996
 ) -> float:
     return round(100 * (alpha + clicks) / (alpha + beta + impressions), 2)
@@ -72,7 +72,7 @@ def select_for_plot(data: pd.DataFrame, column: str, N: int = 15) -> list[any]:
         .agg(impressions=("label", "size"), clicks=("label", "sum"))
         .reset_index()
     )
-    CTR["CTR"] = beta_posterior_ctr(CTR["clicks"], CTR["impressions"])
+    CTR["CTR"] = posterior_ctr(CTR["clicks"], CTR["impressions"])
     selected = list(CTR.sort_values("CTR", ascending=False)[column])[: N // 2]
     # print(data[column].value_counts(ascending=False))
     counts = list(data[column].value_counts(ascending=False).index)
@@ -107,9 +107,7 @@ def group_df(data: pd.DataFrame, filters: dict[str, str], view_choice: str):
     if view_choice == "hourly":
         total_ctr = (
             hourly_impressions.groupby("lt")
-            .apply(
-                lambda x: beta_posterior_ctr(x["clicks"].sum(), x["impressions"].sum())
-            )
+            .apply(lambda x: posterior_ctr(x["clicks"].sum(), x["impressions"].sum()))
             .reset_index(name="CTR")
         )
         total_cumulative_impressions = None
@@ -140,7 +138,7 @@ def group_df(data: pd.DataFrame, filters: dict[str, str], view_choice: str):
             total_cumulative_impressions, total_cumulative_clicks, on="lt"
         )
         total_ctr["CTR"] = total_ctr.apply(
-            lambda row: beta_posterior_ctr(
+            lambda row: posterior_ctr(
                 row["cumulative_clicks"], row["cumulative_impressions"]
             ),
             axis=1,
@@ -472,7 +470,7 @@ def plot_category_vs_ctr(data: pd.DataFrame, column: str, n: int = 100) -> Figur
         .agg(impressions=("label", "size"), clicks=("label", "sum"))
         .reset_index()
     )
-    data["CTR"] = beta_posterior_ctr(data["clicks"], data["impressions"])
+    data["CTR"] = posterior_ctr(data["clicks"], data["impressions"])
     data = data.sort_values("impressions", ascending=False).iloc[:n, :]
 
     # Create figure and axis
