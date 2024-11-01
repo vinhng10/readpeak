@@ -240,6 +240,8 @@ def update_plot(
         ax1.legend(lines1 + [bars], labels1 + labels2, loc="upper right")
 
         # Show the plot
+        ax1.grid(False)
+        ax2.grid(False)
         plt.show()
 
 
@@ -372,6 +374,9 @@ def update_detailed_plot(
             lines1, labels1 = ax[i].get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax[i].legend(lines1 + [bars], labels1 + labels2, loc="upper right")
+
+            ax[i].grid(False)
+            ax2.grid(False)
 
         # Show the plot
         plt.show()
@@ -513,6 +518,8 @@ def plot_category_vs_ctr(data: pd.DataFrame, column: str, n: int = 100) -> Figur
     # Display plot
     ax1.set_title(f"{column.capitalize()}", fontsize=16)
 
+    ax1.grid(False)
+    ax2.grid(False)
     plt.close(fig)
 
     return fig
