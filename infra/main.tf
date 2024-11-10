@@ -37,7 +37,12 @@ resource "aws_s3_bucket" "datalake_bucket" {
 }
 resource "aws_kinesis_stream" "kinesis_stream" {
   name        = "KinesisStream"
-  shard_count = 1
+  shard_count = var.shard_count
+
+  shard_level_metrics = [
+    "IncomingBytes",
+    "OutgoingBytes",
+  ]
 
   stream_mode_details {
     stream_mode = "PROVISIONED"
