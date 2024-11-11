@@ -162,3 +162,8 @@ cython_debug/
 #.idea/
 .vscode
 *.feather
+data
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
